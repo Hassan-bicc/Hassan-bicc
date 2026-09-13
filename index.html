@@ -91,15 +91,18 @@
     const TELEGRAM_BOT_TOKEN = '8925481078:AAE-kE4w01jGngCQNHYiwayHJA5BlHnmtI4';
     const TELEGRAM_CHAT_ID = '7132040561';
 
-    // --- Threshold การตรวจจับ ---
-    const IMPACT_THRESHOLD = 25.0;     // แรงกระแทก (m/s²)
+    // --- Threshold การตรวจจับ (ปรับแต่งให้แม่นยำขึ้น) ---
+    const IMPACT_THRESHOLD = 18.0;     // ปรับลดลงนิดหน่อยจาก 25.0 เพื่อให้ทดสอบง่ายขึ้น (m/s²)
+    const SETTLE_DELAY_MS = 800;       // [เพิ่มใหม่] หน่วงเวลา 0.8 วินาที รอมือถือหายเด้งหลังกระแทก
     const INACTIVITY_TIME_MS = 3000;   // ระยะเวลานิ่งหลังกระแทก (3 วินาที)
     const COUNTDOWN_SECONDS = 10;      // เวลานับถอยหลังก่อนส่ง Telegram (10 วินาที)
-    const STILL_MIN = 7.0; 
-    const STILL_MAX = 12.5;
+    
+    // ขยายช่วงเพื่อรองรับความแกว่ง (Noise) ของเซนเซอร์มือถือ
+    const STILL_MIN = 6.5; 
+    const STILL_MAX = 13.0;
 
     // --- Variables ---
-    let state = 'OFF'; // 'OFF', 'NORMAL', 'WAITING_INACTIVITY', 'COUNTDOWN', 'ALERT_SENT'
+    let state = 'OFF'; 
     let impactTime = 0;
     let isStill = true;
     let countdownTimer = null;
@@ -108,7 +111,6 @@
     let currentLon = null;
 
     function requestPermissions() {
-        // 1. ขออนุญาต GPS
         if (navigator.geolocation) {
             navigator.geolocation.watchPosition(
                 (pos) => {
@@ -123,7 +125,6 @@
             );
         }
 
-        // 2. ขออนุญาต Sensor (รองรับ iOS/Android)
         if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
             DeviceMotionEvent.requestPermission()
                 .then(response => {
@@ -168,8 +169,11 @@
         else if (state === 'WAITING_INACTIVITY') {
             let elapsedTime = Date.now() - impactTime;
 
-            if (totalAcc < STILL_MIN || totalAcc > STILL_MAX) {
-                isStill = false; // มีการขยับตัว
+            // *** แก้ไขจุดสำคัญ: รอให้ผ่านช่วงเด้ง (800ms) ก่อน ค่อยเริ่มเช็คว่าขยับไหม ***
+            if (elapsedTime > SETTLE_DELAY_MS) {
+                if (totalAcc < STILL_MIN || totalAcc > STILL_MAX) {
+                    isStill = false; // มีการขยับตัวหลังตกถึงพื้นแล้ว
+                }
             }
 
             if (elapsedTime >= INACTIVITY_TIME_MS) {
@@ -182,7 +186,6 @@
         }
     }
 
-    // เริ่มนับถอยหลังก่อนส่ง Telegram
     function startCountdown() {
         state = 'COUNTDOWN';
         countdownLeft = COUNTDOWN_SECONDS;
@@ -204,14 +207,12 @@
         }, 1000);
     }
 
-    // ผู้ใช้กดปุ่มยกเลิกทัน
     function cancelFallAlert() {
         if (countdownTimer) clearInterval(countdownTimer);
         document.getElementById('cancel-btn').style.display = 'none';
         resetToNormal('ยกเลิกการส่งแจ้งเตือนแล้ว');
     }
 
-    // ยืนยันการส่ง Telegram + แนบ GPS
     function executeSendAlert() {
         state = 'ALERT_SENT';
         document.getElementById('cancel-btn').style.display = 'none';
