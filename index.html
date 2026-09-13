@@ -3,136 +3,249 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fall Detection Test (Mobile Browser)</title>
+    <title>Smart Fall Detection System</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             text-align: center;
             padding: 20px;
-            background-color: #f4f4f9;
+            background-color: #f0f2f5;
+            margin: 0;
         }
         .card {
             background: white;
-            padding: 20px;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            max-width: 400px;
+            padding: 25px;
+            border-radius: 16px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+            max-width: 420px;
             margin: auto;
         }
         .status {
-            font-size: 24px;
+            font-size: 20px;
             font-weight: bold;
-            padding: 15px;
-            border-radius: 8px;
+            padding: 20px;
+            border-radius: 12px;
             margin-top: 20px;
             background-color: #4CAF50;
             color: white;
+            transition: all 0.3s ease;
         }
-        .status.fall {
-            background-color: #f44336;
-            animation: blink 0.5s infinite alternate;
-        }
+        .status.warning { background-color: #ff9800; }
+        .status.countdown { background-color: #f44336; animation: blink 0.6s infinite alternate; }
+        .status.sent { background-color: #9c27b0; }
+        
         button {
-            padding: 12px 24px;
+            padding: 14px 28px;
             font-size: 16px;
-            background-color: #008CBA;
-            color: white;
+            font-weight: bold;
             border: none;
-            border-radius: 6px;
+            border-radius: 8px;
             cursor: pointer;
             margin-top: 15px;
+            width: 100%;
         }
+        .btn-start { background-color: #008CBA; color: white; }
+        .btn-cancel { 
+            background-color: #ffffff; 
+            color: #d32f2f; 
+            border: 2px solid #d32f2f;
+            font-size: 18px;
+            display: none;
+        }
+        
+        .sensor-data {
+            margin-top: 15px;
+            text-align: left;
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
         @keyframes blink {
             from { opacity: 1; }
-            to { opacity: 0.5; }
+            to { opacity: 0.6; }
         }
     </style>
 </head>
 <body>
 
 <div class="card">
-    <h2>Fall Detection Tester</h2>
-    <p>สภาวะปกติ: ~9.8 m/s²</p>
+    <h2>Smart Fall Detection</h2>
+    <p style="color: #666; font-size: 14px;">ระบบตรวจจับการล้ม + แจ้งเตือนพิกัด GPS</p>
     
-    <button onclick="requestSensorPermission()">เริ่มต้นใช้งานเซนเซอร์</button>
+    <button class="btn-start" onclick="requestPermissions()">เปิดระบบตรวจจับและ GPS</button>
 
-    <div style="margin-top: 15px; text-align: left;">
-        <p><strong>Vector Magnitude:</strong> <span id="acc-total">0.00</span> m/s²</p>
-        <p><strong>Acc X:</strong> <span id="acc-x">0.00</span></p>
-        <p><strong>Acc Y:</strong> <span id="acc-y">0.00</span></p>
-        <p><strong>Acc Z:</strong> <span id="acc-z">0.00</span></p>
+    <div class="sensor-data">
+        <p><strong>Vector Acc:</strong> <span id="acc-total">0.00</span> m/s²</p>
+        <p><strong>สถานะ GPS:</strong> <span id="gps-status">ยังไม่ได้เชื่อมต่อ</span></p>
     </div>
 
-    <div id="status-box" class="status">สถานะ: ปกติ</div>
+    <div id="status-box" class="status">สถานะ: ปิดทำงาน</div>
+    
+    <button id="cancel-btn" class="btn-cancel" onclick="cancelFallAlert()">✋ ฉันไม่เป็นไร (ยกเลิกแจ้งเตือน)</button>
 </div>
 
 <script>
-    let isFallDetected = false;
-    const FALL_THRESHOLD = 25.0; // ค่าแรงกระแทก (m/s²) ปรับเพิ่ม/ลด ได้ตามการทดสอบ
+    // --- Config ตั้งค่า Telegram ---
+    const TELEGRAM_BOT_TOKEN = '8925481078:AAE-kE4w01jGngCQNHYiwayHJA5BlHnmtI4';
+    const TELEGRAM_CHAT_ID = '7132040561';
 
-    function requestSensorPermission() {
-        // สำหรับ iOS 13+ ต้องขออนุญาตเข้าถึง Sensor ก่อน
+    // --- Threshold การตรวจจับ ---
+    const IMPACT_THRESHOLD = 25.0;     // แรงกระแทก (m/s²)
+    const INACTIVITY_TIME_MS = 3000;   // ระยะเวลานิ่งหลังกระแทก (3 วินาที)
+    const COUNTDOWN_SECONDS = 10;      // เวลานับถอยหลังก่อนส่ง Telegram (10 วินาที)
+    const STILL_MIN = 8.0; 
+    const STILL_MAX = 11.5;
+
+    // --- Variables ---
+    let state = 'OFF'; // 'OFF', 'NORMAL', 'WAITING_INACTIVITY', 'COUNTDOWN', 'ALERT_SENT'
+    let impactTime = 0;
+    let isStill = true;
+    let countdownTimer = null;
+    let countdownLeft = COUNTDOWN_SECONDS;
+    let currentLat = null;
+    let currentLon = null;
+
+    function requestPermissions() {
+        // 1. ขออนุญาต GPS
+        if (navigator.geolocation) {
+            navigator.geolocation.watchPosition(
+                (pos) => {
+                    currentLat = pos.coords.latitude;
+                    currentLon = pos.coords.longitude;
+                    document.getElementById('gps-status').innerText = 'รับพิกัดสำเร็จ ✅';
+                },
+                (err) => {
+                    document.getElementById('gps-status').innerText = 'ไม่สามารถดึง GPS ได้';
+                },
+                { enableHighAccuracy: true }
+            );
+        }
+
+        // 2. ขออนุญาต Sensor (รองรับ iOS/Android)
         if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
             DeviceMotionEvent.requestPermission()
                 .then(response => {
-                    if (response === 'granted') {
-                        startListening();
-                    } else {
-                        alert('คุณไม่ได้อนุญาตให้เข้าถึง Motion Sensor');
-                    }
+                    if (response === 'granted') startSystem();
+                    else alert('คุณไม่ได้อนุญาตให้เข้าถึง Motion Sensor');
                 })
                 .catch(console.error);
         } else {
-            // Android หรือบราวเซอร์ทั่วไป สามารถเปิดใช้งานได้เลย
-            startListening();
+            startSystem();
         }
     }
 
-    function startListening() {
+    function startSystem() {
         window.addEventListener('devicemotion', handleMotion);
-        alert('เปิดใช้งานการตรวจจับแล้ว');
+        state = 'NORMAL';
+        updateUI('พร้อมใช้งาน (เฝ้าระวังปกติ)', 'normal');
     }
 
     function handleMotion(event) {
+        if (state === 'OFF' || state === 'COUNTDOWN' || state === 'ALERT_SENT') return;
+
         let acc = event.accelerationIncludingGravity;
         if (!acc || acc.x === null) return;
 
         let x = acc.x || 0;
         let y = acc.y || 0;
         let z = acc.z || 0;
-
-        // คำนวณความเร่งรวม (Magnitude)
         let totalAcc = Math.sqrt(x * x + y * y + z * z);
 
-        // อัปเดตค่าบนหน้าจอ
-        document.getElementById('acc-x').innerText = x.toFixed(2);
-        document.getElementById('acc-y').innerText = y.toFixed(2);
-        document.getElementById('acc-z').innerText = z.toFixed(2);
         document.getElementById('acc-total').innerText = totalAcc.toFixed(2);
 
-        // ตรวจจับแรงกระแทก
-        if (totalAcc > FALL_THRESHOLD && !isFallDetected) {
-            triggerFallAlert();
+        // State 1: สภาวะปกติ จับแรงกระแทก
+        if (state === 'NORMAL') {
+            if (totalAcc > IMPACT_THRESHOLD) {
+                state = 'WAITING_INACTIVITY';
+                impactTime = Date.now();
+                isStill = true;
+                updateUI('⚠️ ตรวจพบแรงกระแทก! เช็คการเคลื่อนไหว...', 'warning');
+            }
+        } 
+        // State 2: เช็คการนิ่ง (Inactivity)
+        else if (state === 'WAITING_INACTIVITY') {
+            let elapsedTime = Date.now() - impactTime;
+
+            if (totalAcc < STILL_MIN || totalAcc > STILL_MAX) {
+                isStill = false; // มีการขยับตัว
+            }
+
+            if (elapsedTime >= INACTIVITY_TIME_MS) {
+                if (isStill) {
+                    startCountdown(); // นิ่งจริง -> เข้าสู่การนับถอยหลัง
+                } else {
+                    resetToNormal('ยกเลิก (พบการเคลื่อนไหวหลังกระแทก)');
+                }
+            }
         }
     }
 
-    function triggerFallAlert() {
-        isFallDetected = true;
-        const statusBox = document.getElementById('status-box');
-        statusBox.innerText = '⚠️ ตรวจพบการล้ม! (FALL DETECTED)';
-        statusBox.classList.add('fall');
+    // เริ่มนับถอยหลังก่อนส่ง Telegram
+    function startCountdown() {
+        state = 'COUNTDOWN';
+        countdownLeft = COUNTDOWN_SECONDS;
+        document.getElementById('cancel-btn').style.display = 'block';
 
-        // สั่นมือถือ (ถ้าอุปกรณ์รองรับ)
-        if (navigator.vibrate) {
-            navigator.vibrate([500, 200, 500]);
-        }
+        if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]);
 
-        // คืนค่าสถานะปกติหลังจากผ่านไป 5 วินาที
-        setTimeout(() => {
-            isFallDetected = false;
-            statusBox.innerText = 'สถานะ: ปกติ';
-            statusBox.classList.remove('fall');
-        }, 5000);
+        updateUI(`🚨 ตรวจพบการล้ม! จะส่งแจ้งเตือนใน ${countdownLeft} วินาที`, 'countdown');
+
+        countdownTimer = setInterval(() => {
+            countdownLeft--;
+            if (countdownLeft > 0) {
+                updateUI(`🚨 ตรวจพบการล้ม! จะส่งแจ้งเตือนใน ${countdownLeft} วินาที`, 'countdown');
+                if (navigator.vibrate) navigator.vibrate(300);
+            } else {
+                clearInterval(countdownTimer);
+                executeSendAlert();
+            }
+        }, 1000);
+    }
+
+    // ผู้ใช้กดปุ่มยกเลิกทัน
+    function cancelFallAlert() {
+        if (countdownTimer) clearInterval(countdownTimer);
+        document.getElementById('cancel-btn').style.display = 'none';
+        resetToNormal('ยกเลิกการส่งแจ้งเตือนแล้ว');
+    }
+
+    // ยืนยันการส่ง Telegram + แนบ GPS
+    function executeSendAlert() {
+        state = 'ALERT_SENT';
+        document.getElementById('cancel-btn').style.display = 'none';
+        updateUI('📡 กำลังส่งพิกัดแจ้งเตือนฉุกเฉิน...', 'sent');
+
+        let mapLink = (currentLat && currentLon) 
+            ? `\n📍 พิกัด GPS: https://maps.google.com/?q=${currentLat},${currentLon}`
+            : '\n📍 ไม่สามารถระบุพิกัด GPS ได้';
+
+        let messageText = encodeURIComponent(`🚨 [แจ้งเตือนด่วน] ตรวจพบผู้ใช้งานล้ม และไม่มีการตอบสนอง!${mapLink}`);
+        let telegramUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&text=${messageText}`;
+
+        fetch(telegramUrl)
+            .then(res => res.json())
+            .then(data => {
+                updateUI('🚨 ส่งข้อความและพิกัดเข้า Telegram แล้ว!', 'countdown');
+                setTimeout(() => resetToNormal('พร้อมใช้งาน (เฝ้าระวังปกติ)'), 8000);
+            })
+            .catch(err => {
+                updateUI('❌ ส่ง Telegram ล้มเหลว', 'warning');
+                setTimeout(() => resetToNormal('พร้อมใช้งาน (เฝ้าระวังปกติ)'), 5000);
+            });
+    }
+
+    function resetToNormal(msg) {
+        state = 'NORMAL';
+        document.getElementById('cancel-btn').style.display = 'none';
+        updateUI(msg, 'normal');
+    }
+
+    function updateUI(text, statusClass) {
+        const box = document.getElementById('status-box');
+        box.innerText = text;
+        box.className = 'status ' + statusClass;
     }
 </script>
 
