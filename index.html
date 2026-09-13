@@ -21,9 +21,9 @@
             margin: auto;
         }
         .status {
-            font-size: 20px;
+            font-size: 18px;
             font-weight: bold;
-            padding: 20px;
+            padding: 16px;
             border-radius: 12px;
             margin-top: 20px;
             background-color: #4CAF50;
@@ -79,6 +79,7 @@
     <div class="sensor-data">
         <p><strong>Vector Acc:</strong> <span id="acc-total">0.00</span> m/s²</p>
         <p><strong>สถานะ GPS:</strong> <span id="gps-status">ยังไม่ได้เชื่อมต่อ</span></p>
+        <p><strong>ความนิ่งสะสม (Ratio):</strong> <span id="still-ratio-ui">0%</span></p>
     </div>
 
     <div id="status-box" class="status">สถานะ: ปิดทำงาน</div>
@@ -91,126 +92,13 @@
     const TELEGRAM_BOT_TOKEN = '8925481078:AAE-kE4w01jGngCQNHYiwayHJA5BlHnmtI4';
     const TELEGRAM_CHAT_ID = '7132040561';
 
-    // --- Threshold การตรวจจับ (ปรับแต่งให้แม่นยำขึ้น) ---
-    const IMPACT_THRESHOLD = 18.0;     // ปรับลดลงนิดหน่อยจาก 25.0 เพื่อให้ทดสอบง่ายขึ้น (m/s²)
-    const SETTLE_DELAY_MS = 800;       // [เพิ่มใหม่] หน่วงเวลา 0.8 วินาที รอมือถือหายเด้งหลังกระแทก
-    const INACTIVITY_TIME_MS = 3000;   // ระยะเวลานิ่งหลังกระแทก (3 วินาที)
-    const COUNTDOWN_SECONDS = 10;      // เวลานับถอยหลังก่อนส่ง Telegram (10 วินาที)
-    
-    // ขยายช่วงเพื่อรองรับความแกว่ง (Noise) ของเซนเซอร์มือถือ
-    const STILL_MIN = 6.5; 
-    const STILL_MAX = 13.0;
-
-    // --- Variables ---
-    let state = 'OFF'; 
-    let impactTime = 0;
-    let isStill = true;
-    let countdownTimer = null;
-    let countdownLeft = COUNTDOWN_SECONDS;
-    let currentLat = null;
-    let currentLon = null;
-
-    function requestPermissions() {
-        if (navigator.geolocation) {
-            navigator.geolocation.watchPosition(
-                (pos) => {
-                    currentLat = pos.coords.latitude;
-                    currentLon = pos.coords.longitude;
-                    document.getElementById('gps-status').innerText = 'รับพิกัดสำเร็จ ✅';
-                },
-                (err) => {
-                    document.getElementById('gps-status').innerText = 'ไม่สามารถดึง GPS ได้';
-                },
-                { enableHighAccuracy: true }
-            );
-        }
-
-        if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-            DeviceMotionEvent.requestPermission()
-                .then(response => {
-                    if (response === 'granted') startSystem();
-                    else alert('คุณไม่ได้อนุญาตให้เข้าถึง Motion Sensor');
-                })
-                .catch(console.error);
-        } else {
-            startSystem();
-        }
-    }
-
-    function startSystem() {
-        window.addEventListener('devicemotion', handleMotion);
-        state = 'NORMAL';
-        updateUI('พร้อมใช้งาน (เฝ้าระวังปกติ)', 'normal');
-    }
-
-    function handleMotion(event) {
-        if (state === 'OFF' || state === 'COUNTDOWN' || state === 'ALERT_SENT') return;
-
-        let acc = event.accelerationIncludingGravity;
-        if (!acc || acc.x === null) return;
-
-        let x = acc.x || 0;
-        let y = acc.y || 0;
-        let z = acc.z || 0;
-        let totalAcc = Math.sqrt(x * x + y * y + z * z);
-
-        document.getElementById('acc-total').innerText = totalAcc.toFixed(2);
-
-        // State 1: สภาวะปกติ จับแรงกระแทก
-        if (state === 'NORMAL') {
-            if (totalAcc > IMPACT_THRESHOLD) {
-                state = 'WAITING_INACTIVITY';
-                impactTime = Date.now();
-                isStill = true;
-                updateUI('⚠️ ตรวจพบแรงกระแทก! เช็คการเคลื่อนไหว...', 'warning');
-            }
-        } 
-        // State 2: เช็คการนิ่ง (Inactivity)
-        else if (state === 'WAITING_INACTIVITY') {
-            let elapsedTime = Date.now() - impactTime;
-
-            // *** แก้ไขจุดสำคัญ: รอให้ผ่านช่วงเด้ง (800ms) ก่อน ค่อยเริ่มเช็คว่าขยับไหม ***
-            if (elapsedTime > SETTLE_DELAY_MS) {
-                if (totalAcc < STILL_MIN || totalAcc > STILL_MAX) {
-                    isStill = false; // มีการขยับตัวหลังตกถึงพื้นแล้ว
-                }
-            }
-
-            if (elapsedTime >= INACTIVITY_TIME_MS) {
-                if (isStill) {
-                    startCountdown(); // นิ่งจริง -> เข้าสู่การนับถอยหลัง
-                } else {
-                    resetToNormal('ยกเลิก (พบการเคลื่อนไหวหลังกระแทก)');
-                }
-            }
-        }
-    }
-
-    function startCountdown() {
-        state = 'COUNTDOWN';
-        countdownLeft = COUNTDOWN_SECONDS;
-        document.getElementById('cancel-btn').style.display = 'block';
-
-        if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]);
-
-        updateUI(`🚨 ตรวจพบการล้ม! จะส่งแจ้งเตือนใน ${countdownLeft} วินาที`, 'countdown');
-
-        countdownTimer = setInterval(() => {
-            countdownLeft--;
-            if (countdownLeft > 0) {
-                updateUI(`🚨 ตรวจพบการล้ม! จะส่งแจ้งเตือนใน ${countdownLeft} วินาที`, 'countdown');
-<script>
-    // --- Config ตั้งค่า Telegram ---
-    const TELEGRAM_BOT_TOKEN = '8925481078:AAE-kE4w01jGngCQNHYiwayHJA5BlHnmtI4';
-    const TELEGRAM_CHAT_ID = '7132040561';
-
     // --- Threshold การตรวจจับ ---
     const IMPACT_THRESHOLD = 16.0;     // แรงกระแทก (m/s²)
     const SETTLE_DELAY_MS = 1000;      // รอมือถือหยุดเด้ง 1 วินาที
     const INACTIVITY_TIME_MS = 3500;   // เช็คความนิ่งรวม 3.5 วินาที
     const COUNTDOWN_SECONDS = 10;
     
-    // ขยายช่วง STILL ให้กว้างขึ้นเพื่อรองรับ Noise
+    // ช่วงความเร่งที่นับว่านิ่ง
     const STILL_MIN = 5.0; 
     const STILL_MAX = 14.0;
 
@@ -218,7 +106,6 @@
     let state = 'OFF'; 
     let impactTime = 0;
     
-    // ตัวแปรนับ Sample ความนิ่ง
     let totalSamples = 0;
     let stillSamples = 0;
 
@@ -228,33 +115,42 @@
     let currentLon = null;
 
     function requestPermissions() {
+        // 1. ดึง GPS (ทำแบบแยกอิสระ ไม่บล็อกเซนเซอร์ความเคลื่อนไหว)
         if (navigator.geolocation) {
-            navigator.geolocation.watchPosition(
+            navigator.geolocation.getCurrentPosition(
                 (pos) => {
                     currentLat = pos.coords.latitude;
                     currentLon = pos.coords.longitude;
                     document.getElementById('gps-status').innerText = 'รับพิกัดสำเร็จ ✅';
                 },
                 (err) => {
-                    document.getElementById('gps-status').innerText = 'ไม่สามารถดึง GPS ได้';
+                    document.getElementById('gps-status').innerText = 'ไม่สามารถดึง GPS ได้ (แต่ระบบยังทำงานได้)';
                 },
-                { enableHighAccuracy: true }
+                { enableHighAccuracy: true, timeout: 5000 }
             );
         }
 
+        // 2. ขออนุญาต Sensor (iOS & Android)
         if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
             DeviceMotionEvent.requestPermission()
                 .then(response => {
-                    if (response === 'granted') startSystem();
-                    else alert('คุณไม่ได้อนุญาตให้เข้าถึง Motion Sensor');
+                    if (response === 'granted') {
+                        startSystem();
+                    } else {
+                        alert('คุณไม่ได้อนุญาตให้เข้าถึง Motion Sensor');
+                    }
                 })
-                .catch(console.error);
+                .catch(err => {
+                    console.error(err);
+                    startSystem();
+                });
         } else {
             startSystem();
         }
     }
 
     function startSystem() {
+        window.removeEventListener('devicemotion', handleMotion); // ลบ Event เก่าป้องกันซ้ำ
         window.addEventListener('devicemotion', handleMotion);
         state = 'NORMAL';
         updateUI('พร้อมใช้งาน (เฝ้าระวังปกติ)', 'normal');
@@ -283,27 +179,28 @@
                 updateUI('⚠️ ตรวจพบแรงกระแทก! กำลังเช็คความนิ่ง...', 'warning');
             }
         } 
-        // State 2: เช็คการนิ่ง (Inactivity Check แบบนับอัตราส่วน)
+        // State 2: เช็คการนิ่ง (Inactivity Check)
         else if (state === 'WAITING_INACTIVITY') {
             let elapsedTime = Date.now() - impactTime;
 
-            // ผ่านช่วง 1 วินาทีแรกที่เด้งไปแล้ว ค่อยเริ่มเก็บข้อมูล
             if (elapsedTime > SETTLE_DELAY_MS) {
                 totalSamples++;
                 if (totalAcc >= STILL_MIN && totalAcc <= STILL_MAX) {
                     stillSamples++;
                 }
+
+                let currentRatio = Math.round((stillSamples / totalSamples) * 100);
+                document.getElementById('still-ratio-ui').innerText = currentRatio + '%';
             }
 
-            // เมื่อเก็บข้อมูลครบ 3.5 วินาที
             if (elapsedTime >= INACTIVITY_TIME_MS) {
                 let stillRatio = (totalSamples > 0) ? (stillSamples / totalSamples) : 0;
                 
-                // ถ้านิ่งเกิน 65% ของจำนวนค่าที่อ่านได้ทั้งหมด -> ตีความว่านิ่งจริง!
-                if (stillRatio >= 0.65) {
+                // ถ้านิ่งเกิน 60% ของเวลาทั้งหมด -> ถือว่านิ่งจริง
+                if (stillRatio >= 0.60) {
                     startCountdown();
                 } else {
-                    resetToNormal(`ยกเลิก (พบนการขยับตัว ${Math.round((1 - stillRatio) * 100)}%)`);
+                    resetToNormal(`ยกเลิก (พบการขยับตัว ${Math.round((1 - stillRatio) * 100)}%)`);
                 }
             }
         }
@@ -363,6 +260,7 @@
     function resetToNormal(msg) {
         state = 'NORMAL';
         document.getElementById('cancel-btn').style.display = 'none';
+        document.getElementById('still-ratio-ui').innerText = '0%';
         updateUI(msg, 'normal');
     }
 
