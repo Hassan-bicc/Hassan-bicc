@@ -199,6 +199,129 @@
             countdownLeft--;
             if (countdownLeft > 0) {
                 updateUI(`🚨 ตรวจพบการล้ม! จะส่งแจ้งเตือนใน ${countdownLeft} วินาที`, 'countdown');
+<script>
+    // --- Config ตั้งค่า Telegram ---
+    const TELEGRAM_BOT_TOKEN = '8925481078:AAE-kE4w01jGngCQNHYiwayHJA5BlHnmtI4';
+    const TELEGRAM_CHAT_ID = '7132040561';
+
+    // --- Threshold การตรวจจับ ---
+    const IMPACT_THRESHOLD = 16.0;     // แรงกระแทก (m/s²)
+    const SETTLE_DELAY_MS = 1000;      // รอมือถือหยุดเด้ง 1 วินาที
+    const INACTIVITY_TIME_MS = 3500;   // เช็คความนิ่งรวม 3.5 วินาที
+    const COUNTDOWN_SECONDS = 10;
+    
+    // ขยายช่วง STILL ให้กว้างขึ้นเพื่อรองรับ Noise
+    const STILL_MIN = 5.0; 
+    const STILL_MAX = 14.0;
+
+    // --- Variables ---
+    let state = 'OFF'; 
+    let impactTime = 0;
+    
+    // ตัวแปรนับ Sample ความนิ่ง
+    let totalSamples = 0;
+    let stillSamples = 0;
+
+    let countdownTimer = null;
+    let countdownLeft = COUNTDOWN_SECONDS;
+    let currentLat = null;
+    let currentLon = null;
+
+    function requestPermissions() {
+        if (navigator.geolocation) {
+            navigator.geolocation.watchPosition(
+                (pos) => {
+                    currentLat = pos.coords.latitude;
+                    currentLon = pos.coords.longitude;
+                    document.getElementById('gps-status').innerText = 'รับพิกัดสำเร็จ ✅';
+                },
+                (err) => {
+                    document.getElementById('gps-status').innerText = 'ไม่สามารถดึง GPS ได้';
+                },
+                { enableHighAccuracy: true }
+            );
+        }
+
+        if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+            DeviceMotionEvent.requestPermission()
+                .then(response => {
+                    if (response === 'granted') startSystem();
+                    else alert('คุณไม่ได้อนุญาตให้เข้าถึง Motion Sensor');
+                })
+                .catch(console.error);
+        } else {
+            startSystem();
+        }
+    }
+
+    function startSystem() {
+        window.addEventListener('devicemotion', handleMotion);
+        state = 'NORMAL';
+        updateUI('พร้อมใช้งาน (เฝ้าระวังปกติ)', 'normal');
+    }
+
+    function handleMotion(event) {
+        if (state === 'OFF' || state === 'COUNTDOWN' || state === 'ALERT_SENT') return;
+
+        let acc = event.accelerationIncludingGravity;
+        if (!acc || acc.x === null) return;
+
+        let x = acc.x || 0;
+        let y = acc.y || 0;
+        let z = acc.z || 0;
+        let totalAcc = Math.sqrt(x * x + y * y + z * z);
+
+        document.getElementById('acc-total').innerText = totalAcc.toFixed(2);
+
+        // State 1: สภาวะปกติ จับแรงกระแทก
+        if (state === 'NORMAL') {
+            if (totalAcc > IMPACT_THRESHOLD) {
+                state = 'WAITING_INACTIVITY';
+                impactTime = Date.now();
+                totalSamples = 0;
+                stillSamples = 0;
+                updateUI('⚠️ ตรวจพบแรงกระแทก! กำลังเช็คความนิ่ง...', 'warning');
+            }
+        } 
+        // State 2: เช็คการนิ่ง (Inactivity Check แบบนับอัตราส่วน)
+        else if (state === 'WAITING_INACTIVITY') {
+            let elapsedTime = Date.now() - impactTime;
+
+            // ผ่านช่วง 1 วินาทีแรกที่เด้งไปแล้ว ค่อยเริ่มเก็บข้อมูล
+            if (elapsedTime > SETTLE_DELAY_MS) {
+                totalSamples++;
+                if (totalAcc >= STILL_MIN && totalAcc <= STILL_MAX) {
+                    stillSamples++;
+                }
+            }
+
+            // เมื่อเก็บข้อมูลครบ 3.5 วินาที
+            if (elapsedTime >= INACTIVITY_TIME_MS) {
+                let stillRatio = (totalSamples > 0) ? (stillSamples / totalSamples) : 0;
+                
+                // ถ้านิ่งเกิน 65% ของจำนวนค่าที่อ่านได้ทั้งหมด -> ตีความว่านิ่งจริง!
+                if (stillRatio >= 0.65) {
+                    startCountdown();
+                } else {
+                    resetToNormal(`ยกเลิก (พบนการขยับตัว ${Math.round((1 - stillRatio) * 100)}%)`);
+                }
+            }
+        }
+    }
+
+    function startCountdown() {
+        state = 'COUNTDOWN';
+        countdownLeft = COUNTDOWN_SECONDS;
+        document.getElementById('cancel-btn').style.display = 'block';
+
+        if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]);
+
+        updateUI(`🚨 ตรวจพบการล้ม! จะส่งแจ้งเตือนใน ${countdownLeft} วินาที`, 'countdown');
+
+        countdownTimer = setInterval(() => {
+            countdownLeft--;
+            if (countdownLeft > 0) {
+                updateUI(`🚨 ตรวจพบการล้ม! จะส่งแจ้งเตือนใน ${countdownLeft} วินาที`, 'countdown');
                 if (navigator.vibrate) navigator.vibrate(300);
             } else {
                 clearInterval(countdownTimer);
