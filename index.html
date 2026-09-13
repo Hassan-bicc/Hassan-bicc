@@ -67,33 +67,30 @@
 </div>
 
 <script>
-    // --- ตั้งค่า Threshold ---
-    const IMPACT_THRESHOLD = 25.0; // แรงกระแทก (m/s²)
-    const INACTIVITY_TIME_MS = 3000; // ระยะเวลาที่ต้องนิ่ง (3 วินาที)
-    const STILL_MIN = 8.0;  // ค่าความเร่งต่ำสุดช่วงอยู่นิ่ง
-    const STILL_MAX = 11.5; // ค่าความเร่งสูงสุดช่วงอยู่นิ่ง
-
-    // --- สถานะการทำงาน ---
-    let state = 'NORMAL'; // 'NORMAL', 'WAITING_INACTIVITY', 'FALL_CONFIRMED'
-    let impactTime = 0;
-    let isStill = true;
+    let isFallDetected = false;
+    const FALL_THRESHOLD = 25.0; // ค่าแรงกระแทก (m/s²) ปรับเพิ่ม/ลด ได้ตามการทดสอบ
 
     function requestSensorPermission() {
+        // สำหรับ iOS 13+ ต้องขออนุญาตเข้าถึง Sensor ก่อน
         if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
             DeviceMotionEvent.requestPermission()
                 .then(response => {
-                    if (response === 'granted') startListening();
-                    else alert('คุณไม่ได้อนุญาตให้เข้าถึง Motion Sensor');
+                    if (response === 'granted') {
+                        startListening();
+                    } else {
+                        alert('คุณไม่ได้อนุญาตให้เข้าถึง Motion Sensor');
+                    }
                 })
                 .catch(console.error);
         } else {
+            // Android หรือบราวเซอร์ทั่วไป สามารถเปิดใช้งานได้เลย
             startListening();
         }
     }
 
     function startListening() {
         window.addEventListener('devicemotion', handleMotion);
-        alert('เปิดใช้งานระบบตรวจจับแบบ 2 ขั้นตอนแล้ว');
+        alert('เปิดใช้งานการตรวจจับแล้ว');
     }
 
     function handleMotion(event) {
@@ -107,73 +104,35 @@
         // คำนวณความเร่งรวม (Magnitude)
         let totalAcc = Math.sqrt(x * x + y * y + z * z);
 
-        // แสดงผลค่าบนหน้าจอ
+        // อัปเดตค่าบนหน้าจอ
         document.getElementById('acc-x').innerText = x.toFixed(2);
         document.getElementById('acc-y').innerText = y.toFixed(2);
         document.getElementById('acc-z').innerText = z.toFixed(2);
         document.getElementById('acc-total').innerText = totalAcc.toFixed(2);
 
-        // --- State Machine อัลกอริทึม ---
-        
-        // 1. สภาวะปกติ: รอจับแรงกระแทก
-        if (state === 'NORMAL') {
-            if (totalAcc > IMPACT_THRESHOLD) {
-                state = 'WAITING_INACTIVITY';
-                impactTime = Date.now();
-                isStill = true; // สมมติให้นิ่งไว้ก่อน
-                updateStatusUI('⚠️ ตรวจพบแรงกระแทก! กำลังเช็คการเคลื่อนไหว...', 'warning');
-            }
-        } 
-        
-        // 2. สภาวะเฝ้าระวัง: เช็คว่าเครื่องนิ่งจริงไหมในช่วงเวลาที่กำหนด
-        else if (state === 'WAITING_INACTIVITY') {
-            let elapsedTime = Date.now() - impactTime;
-
-            // ถ้ามีการขยับแรงเกินช่วงนิ่ง ให้ยกเลิกการเตือน (False Alarm)
-            if (totalAcc < STILL_MIN || totalAcc > STILL_MAX) {
-                isStill = false; 
-            }
-
-            // เมื่อครบกำหนดเวลา 3 วินาที
-            if (elapsedTime >= INACTIVITY_TIME_MS) {
-                if (isStill) {
-                    // นิ่งจริง -> ยืนยันว่าล้ม
-                    triggerFallConfirmed();
-                } else {
-                    // มีการขยับ/หยิบขึ้นมา -> รีเซ็ตเป็นปกติ
-                    resetToNormal('ยกเลิก (พบการขยับตัวหลังกระแทก)');
-                }
-            }
+        // ตรวจจับแรงกระแทก
+        if (totalAcc > FALL_THRESHOLD && !isFallDetected) {
+            triggerFallAlert();
         }
     }
 
-    function triggerFallConfirmed() {
-        state = 'FALL_CONFIRMED';
-        updateStatusUI('🚨 ยืนยันการล้ม! (FALL CONFIRMED)', 'fall');
-
-        if (navigator.vibrate) {
-            navigator.vibrate([500, 200, 500, 200, 500]);
-        }
-
-        // คืนค่าปกติหลังแสดงเตือน 5 วินาที
-        setTimeout(() => {
-            resetToNormal('สถานะ: ปกติ');
-        }, 5000);
-    }
-
-    function resetToNormal(message) {
-        state = 'NORMAL';
-        updateStatusUI(message, 'normal');
-    }
-
-    function updateStatusUI(text, type) {
+    function triggerFallAlert() {
+        isFallDetected = true;
         const statusBox = document.getElementById('status-box');
-        statusBox.innerText = text;
-        statusBox.className = 'status'; // รีเซ็ต class
-        
-        if (type === 'fall') statusBox.classList.add('fall');
-        else if (type === 'warning') statusBox.style.backgroundColor = '#ff9800';
-        else statusBox.style.backgroundColor = '#4CAF50';
+        statusBox.innerText = '⚠️ ตรวจพบการล้ม! (FALL DETECTED)';
+        statusBox.classList.add('fall');
+
+        // สั่นมือถือ (ถ้าอุปกรณ์รองรับ)
+        if (navigator.vibrate) {
+            navigator.vibrate([500, 200, 500]);
+        }
+
+        // คืนค่าสถานะปกติหลังจากผ่านไป 5 วินาที
+        setTimeout(() => {
+            isFallDetected = false;
+            statusBox.innerText = 'สถานะ: ปกติ';
+            statusBox.classList.remove('fall');
+        }, 5000);
     }
 </script>
 
