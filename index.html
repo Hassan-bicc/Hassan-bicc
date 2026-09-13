@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fall Detection Test (Mobile Browser)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 20px;
+            background-color: #f4f4f9;
+        }
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            max-width: 400px;
+            margin: auto;
+        }
+        .status {
+            font-size: 24px;
+            font-weight: bold;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            background-color: #4CAF50;
+            color: white;
+        }
+        .status.fall {
+            background-color: #f44336;
+            animation: blink 0.5s infinite alternate;
+        }
+        button {
+            padding: 12px 24px;
+            font-size: 16px;
+            background-color: #008CBA;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-top: 15px;
+        }
+        @keyframes blink {
+            from { opacity: 1; }
+            to { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Fall Detection Tester</h2>
+    <p>สภาวะปกติ: ~9.8 m/s²</p>
+    
+    <button onclick="requestSensorPermission()">เริ่มต้นใช้งานเซนเซอร์</button>
+
+    <div style="margin-top: 15px; text-align: left;">
+        <p><strong>Vector Magnitude:</strong> <span id="acc-total">0.00</span> m/s²</p>
+        <p><strong>Acc X:</strong> <span id="acc-x">0.00</span></p>
+        <p><strong>Acc Y:</strong> <span id="acc-y">0.00</span></p>
+        <p><strong>Acc Z:</strong> <span id="acc-z">0.00</span></p>
+    </div>
+
+    <div id="status-box" class="status">สถานะ: ปกติ</div>
+</div>
+
+<script>
+    let isFallDetected = false;
+    const FALL_THRESHOLD = 25.0; // ค่าแรงกระแทก (m/s²) ปรับเพิ่ม/ลด ได้ตามการทดสอบ
+
+    function requestSensorPermission() {
+        // สำหรับ iOS 13+ ต้องขออนุญาตเข้าถึง Sensor ก่อน
+        if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+            DeviceMotionEvent.requestPermission()
+                .then(response => {
+                    if (response === 'granted') {
+                        startListening();
+                    } else {
+                        alert('คุณไม่ได้อนุญาตให้เข้าถึง Motion Sensor');
+                    }
+                })
+                .catch(console.error);
+        } else {
+            // Android หรือบราวเซอร์ทั่วไป สามารถเปิดใช้งานได้เลย
+            startListening();
+        }
+    }
+
+    function startListening() {
+        window.addEventListener('devicemotion', handleMotion);
+        alert('เปิดใช้งานการตรวจจับแล้ว');
+    }
+
+    function handleMotion(event) {
+        let acc = event.accelerationIncludingGravity;
+        if (!acc || acc.x === null) return;
+
+        let x = acc.x || 0;
+        let y = acc.y || 0;
+        let z = acc.z || 0;
+
+        // คำนวณความเร่งรวม (Magnitude)
+        let totalAcc = Math.sqrt(x * x + y * y + z * z);
+
+        // อัปเดตค่าบนหน้าจอ
+        document.getElementById('acc-x').innerText = x.toFixed(2);
+        document.getElementById('acc-y').innerText = y.toFixed(2);
+        document.getElementById('acc-z').innerText = z.toFixed(2);
+        document.getElementById('acc-total').innerText = totalAcc.toFixed(2);
+
+        // ตรวจจับแรงกระแทก
+        if (totalAcc > FALL_THRESHOLD && !isFallDetected) {
+            triggerFallAlert();
+        }
+    }
+
+    function triggerFallAlert() {
+        isFallDetected = true;
+        const statusBox = document.getElementById('status-box');
+        statusBox.innerText = '⚠️ ตรวจพบการล้ม! (FALL DETECTED)';
+        statusBox.classList.add('fall');
+
+        // สั่นมือถือ (ถ้าอุปกรณ์รองรับ)
+        if (navigator.vibrate) {
+            navigator.vibrate([500, 200, 500]);
+        }
+
+        // คืนค่าสถานะปกติหลังจากผ่านไป 5 วินาที
+        setTimeout(() => {
+            isFallDetected = false;
+            statusBox.innerText = 'สถานะ: ปกติ';
+            statusBox.classList.remove('fall');
+        }, 5000);
+    }
+</script>
+
+</body>
+</html>
